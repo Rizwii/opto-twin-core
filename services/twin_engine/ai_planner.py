@@ -3,11 +3,25 @@ from physics_model import PhotodetectorPhysicsEngine
 class AICommandPlanner:
     """
     Behavioral AI & Command Validation Module.
-    Interprets operational targets and validates noise/saturation safety
-    before approving bias voltage commands to physical hardware.
+    Interprets operational targets via natural language intent processing and
+    validates noise/saturation safety before approving bias voltage commands to physical hardware.
     """
     def __init__(self, physics_engine: PhotodetectorPhysicsEngine):
         self.engine = physics_engine
+
+    def interpret_natural_language(self, user_prompt: str) -> str:
+        """
+        LLM / NLP Intent Interpreter.
+        Translates natural language user operational goals into target gain modes.
+        """
+        prompt_lower = user_prompt.lower()
+        
+        if any(keyword in prompt_lower for keyword in ["noise", "quiet", "precision", "clean", "low noise"]):
+            return "low_noise"
+        elif any(keyword in prompt_lower for keyword in ["sensitive", "high gain", "faint", "weak", "sensitivity"]):
+            return "high_sensitivity"
+        else:
+            return "balanced"
 
     def validate_and_plan_bias(self, target_gain_mode: str, current_temp_c: float, expected_power_w: float) -> dict:
         """

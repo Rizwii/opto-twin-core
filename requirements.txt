@@ -5,3 +5,6 @@ requests
 numpy
 pytest
 httpx
+influxdb-client
+pyzmq
+paho-mqtt
