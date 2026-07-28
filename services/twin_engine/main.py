@@ -33,12 +33,17 @@ MQTT_PORT = int(os.getenv("MQTT_BROKER_PORT", "1883"))
 mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id="TwinEngine")
 
 def init_mqtt():
-    try:
-        mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
-        mqtt_client.loop_start()
-        print(f"[MQTT] Connected successfully to broker at {MQTT_HOST}:{MQTT_PORT}")
-    except Exception as err:
-        print(f"[MQTT Error] Failed to connect: {err}")
+    """Retries connection until MQTT broker is accessible."""
+    for attempt in range(5):
+        try:
+            mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
+            mqtt_client.loop_start()
+            print(f"[MQTT] Connected successfully to broker at {MQTT_HOST}:{MQTT_PORT}")
+            return
+        except Exception as err:
+            print(f"[MQTT Warning] Connection attempt {attempt + 1}/5 failed: {err}. Retrying in 2s...")
+            time.sleep(2)
+    print("[MQTT Error] Could not connect to MQTT broker after retries.")
 
 def write_to_influx(temp_c: float, bias_v: float, state: dict):
     """Writes physics telemetry point to InfluxDB time-series database."""
