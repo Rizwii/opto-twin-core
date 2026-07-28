@@ -15,24 +15,28 @@ def test_health_check_endpoint_pass():
     assert response.status_code == 200
     assert response.json() == {"status": "online", "service": "twin_engine"}
 
-def test_update_state_endpoint_pass():
-    """Integration Test: Tests telemetry state update contract."""
+def test_plan_command_endpoint_pass():
+    """Integration Test: Tests command validation endpoint."""
     payload = {
-        "temperature_c": 30.0,
-        "bias_voltage_v": 5.0,
-        "optical_power_w": 0.001
+        "target_gain_mode": "balanced",
+        "current_temp_c": 25.0,
+        "expected_power_w": 0.001
     }
-    response = client.post("/update_state", json=payload)
+    response = client.post("/plan_command", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert "digital_twin_state" in data
-    assert data["digital_twin_state"]["responsivity_a_w"] > 0
+    assert "approved" in data
+    assert data["approved"] is True
 
-def test_invalid_telemetry_schema_fail():
-    """Contract Test: Ensures API rejects missing or invalid fields."""
-    invalid_payload = {
-        "temperature_c": 30.0
-        # Missing bias_voltage_v and optical_power_w
+def test_natural_language_command_endpoint_pass():
+    """Integration Test: Verifies LLM prompt interpretation endpoint."""
+    payload = {
+        "user_prompt": "Optimize system for minimal noise level",
+        "current_temp_c": 25.0,
+        "expected_power_w": 0.001
     }
-    response = client.post("/update_state", json=invalid_payload)
-    assert response.status_code == 422 # Unprocessable Entity
+    response = client.post("/plan_nl_command", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["interpreted_gain_mode"] == "low_noise"
+    assert data["plan_result"]["approved"] is True
