@@ -16,10 +16,13 @@ class AICommandPlanner:
         """
         prompt_lower = user_prompt.lower()
         
-        if any(keyword in prompt_lower for keyword in ["noise", "quiet", "precision", "clean", "low noise"]):
-            return "low_noise"
-        elif any(keyword in prompt_lower for keyword in ["sensitive", "high gain", "faint", "weak", "sensitivity"]):
+        # Check explicit target intents first
+        if any(keyword in prompt_lower for keyword in ["maximum sensitivity", "high gain", "faint", "weak signal", "high sensitivity"]):
             return "high_sensitivity"
+        elif any(keyword in prompt_lower for keyword in ["low noise", "quiet mode", "precision mode", "minimal noise"]):
+            return "low_noise"
+        elif "noise" in prompt_lower and not "sensitivity" in prompt_lower:
+            return "low_noise"
         else:
             return "balanced"
 
