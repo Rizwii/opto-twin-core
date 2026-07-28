@@ -1,30 +1,133 @@
+import os
+import json
+import logging
+import urllib.request
+from typing import Dict, Any, Tuple
 from physics_model import PhotodetectorPhysicsEngine
+
+# Load environment variables from local .env if present
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+logger = logging.getLogger(__name__)
+
 
 class AICommandPlanner:
     """
     Behavioral AI & Command Validation Module.
-    Interprets operational targets via natural language intent processing and
-    validates noise/saturation safety before approving bias voltage commands to physical hardware.
+    Interprets operational targets via natural language intent processing (Groq LLM / Fallback Engine)
+    and validates noise/saturation safety before approving bias voltage commands to physical hardware.
     """
+    
+    # Fallback Keyword Rules
+    KEYWORD_RULES = {
+        "high_sensitivity": [
+            "maximum sensitivity", "high gain", "faint", "weak signal", 
+            "high sensitivity", "boost the gain", "dark conditions"
+        ],
+        "low_noise": [
+            "low noise", "quiet mode", "precision mode", "minimal noise", 
+            "thermal noise", "reduce jitter", "clean signal"
+        ],
+        "balanced": [
+            "balanced", "default", "standard", "normal"
+        ]
+    }
+
     def __init__(self, physics_engine: PhotodetectorPhysicsEngine):
         self.engine = physics_engine
 
-    def interpret_natural_language(self, user_prompt: str) -> str:
+    def _fallback_keyword_parser(self, user_prompt: str) -> Tuple[str, float]:
         """
-        LLM / NLP Intent Interpreter.
-        Translates natural language user operational goals into target gain modes.
+        Rule-based heuristic fallback parser.
+        Executes if the LLM API call fails, times out, or has no API key set.
         """
         prompt_lower = user_prompt.lower()
-        
-        # Check explicit target intents first
-        if any(keyword in prompt_lower for keyword in ["maximum sensitivity", "high gain", "faint", "weak signal", "high sensitivity"]):
+        for mode, keywords in self.KEYWORD_RULES.items():
+            if any(kw in prompt_lower for kw in keywords):
+                return mode, 0.75  # Moderate confidence for keyword match
+                
+        return "balanced", 0.30  # Low confidence default fallback
+
+    def interpret_natural_language(self, user_prompt: str) -> Dict[str, Any]:
+        """
+        LLM / NLP Intent Interpreter.
+        Translates natural language user operational goals into target gain modes using Groq LLM (LLaMA 3.3 70B).
+        Falls back to rule-based keyword matching if the API key is missing or calls fail.
+        """
+        api_key = os.getenv("GROQ_API_KEY", "")
+
+        if api_key:
+            try:
+                url = "https://api.groq.com/openai/v1/chat/completions"
+                
+                payload = {
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an intent interpreter for a photodetector sensor system. "
+                                "Analyze the user prompt and map it to one of these modes: "
+                                "['high_sensitivity', 'low_noise', 'balanced']. "
+                                "Respond strictly in raw JSON format: {\"intent\": \"<mode>\", \"confidence\": <0.0-1.0>}"
+                            )
+                        },
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.0,
+                    "response_format": {"type": "json_object"}
+                }
+                
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+
+                req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
+                
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    res_data = json.loads(response.read().decode('utf-8'))
+                    content = json.loads(res_data['choices'][0]['message']['content'])
+                    
+                    return {
+                        "intent": content.get("intent", "balanced"),
+                        "confidence": float(content.get("confidence", 0.9)),
+                        "source": "LLM (Groq / LLaMA 3.3)",
+                        "status": "success"
+                    }
+
+            except Exception as e:
+                logger.warning(f"Groq API call failed ({e}). Falling back to rule-based engine.")
+
+        # Graceful Fallback Execution
+        intent, confidence = self._fallback_keyword_parser(user_prompt)
+        return {
+            "intent": intent,
+            "confidence": confidence,
+            "source": "Rule-Based Fallback Engine",
+            "status": "fallback" if api_key else "no_api_key"
+        }
+
+    def recommend_mode_from_state(self, state: dict) -> str:
+        """
+        Behavioral Model: Selects operational gain mode from ingested telemetry state.
+        Reacts to live sensor data rather than user prompts.
+        """
+        snr_db = state.get("snr_db", 0.0)
+        health_pct = state.get("health_index_pct", 100.0)
+        photocurrent_a = state.get("photocurrent_a", 0.0)
+
+        if state.get("is_saturated", False):
+            return "low_noise"
+        if health_pct < 60.0 or snr_db < 20.0:
+            return "low_noise"
+        if photocurrent_a < 1e-6:
             return "high_sensitivity"
-        elif any(keyword in prompt_lower for keyword in ["low noise", "quiet mode", "precision mode", "minimal noise"]):
-            return "low_noise"
-        elif "noise" in prompt_lower and not "sensitivity" in prompt_lower:
-            return "low_noise"
-        else:
-            return "balanced"
+        return "balanced"
 
     def validate_and_plan_bias(self, target_gain_mode: str, current_temp_c: float, expected_power_w: float) -> dict:
         """

@@ -3,21 +3,39 @@ import random
 import json
 import os
 import zmq
+import paho.mqtt.client as mqtt
 
 ZMQ_PUB_PORT = os.getenv("ZMQ_PUB_PORT", "5555")
+MQTT_HOST = os.getenv("MQTT_BROKER_HOST", "mqtt_broker")
+MQTT_PORT = int(os.getenv("MQTT_BROKER_PORT", "1883"))
 
 class PhotodetectorDataStreamer:
     """
-    Simulates hardware telemetry streams over a high-speed ZeroMQ broker.
+    Simulates hardware telemetry streams over ZeroMQ and MQTT brokers.
     - Transient Phase: 25-30 Hz (~0.035s interval)
     - Nominal Phase: 1 Hz (1.0s interval)
     """
     def __init__(self, mode="transient"):
         self.mode = mode
+        
+        # Initialize ZeroMQ Publisher
         self.context = zmq.Context()
-        self.socket = self.context.socket(zmq.PUB)
-        self.socket.bind(f"tcp://*:{ZMQ_PUB_PORT}")
+        self.zmq_socket = self.context.socket(zmq.PUB)
+        self.zmq_socket.bind(f"tcp://*:{ZMQ_PUB_PORT}")
         print(f"[ZMQ Publisher] Bound and listening on tcp://*:{ZMQ_PUB_PORT}")
+
+        # Initialize MQTT Publisher
+        self.mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id="IngestionStreamer")
+        self.init_mqtt()
+
+    def init_mqtt(self):
+        """Retries connection to MQTT broker."""
+        try:
+            self.mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
+            self.mqtt_client.loop_start()
+            print(f"[MQTT Publisher] Connected to {MQTT_HOST}:{MQTT_PORT}")
+        except Exception as e:
+            print(f"[MQTT Publisher Warning] MQTT broker not available initially: {e}")
 
     def generate_sensor_readings(self) -> dict:
         base_temp = 25.0 + random.uniform(-0.5, 0.5)
@@ -25,21 +43,39 @@ class PhotodetectorDataStreamer:
         optical_power_w = 0.001 + random.uniform(-0.0001, 0.0001)
 
         return {
+            "device_id": "pd_sensor_01",
             "temperature_c": round(base_temp, 2),
             "bias_voltage_v": round(bias_v, 2),
-            "optical_power_w": round(optical_power_w, 6)
+            "optical_power_w": round(optical_power_w, 6),
+            "timestamp": time.time()
         }
 
     def start_streaming(self):
         interval = 0.035 if self.mode == "transient" else 1.0
-        print(f"[Streamer] Continuous streaming started in '{self.mode}' mode via ZMQ...")
+        print(f"[Streamer] Continuous telemetry streaming started in '{self.mode}' mode...")
         
-        while True:
-            payload = self.generate_sensor_readings()
-            # Publish message with topic prefix 'telemetry'
-            message = f"telemetry {json.dumps(payload)}"
-            self.socket.send_string(message)
-            time.sleep(interval)
+        try:
+            while True:
+                payload = self.generate_sensor_readings()
+                json_payload = json.dumps(payload)
+
+                # 1. ZeroMQ Broadcast (High-Speed Pub/Sub)
+                message = f"telemetry {json_payload}"
+                self.zmq_socket.send_string(message)
+
+                # 2. MQTT Topic Publish (Telemetry Topic)
+                try:
+                    self.mqtt_client.publish("telemetry/pd_sensor_01", json_payload)
+                except Exception:
+                    pass
+
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            print("[Streamer] Stopping telemetry streamer...")
+        finally:
+            self.zmq_socket.close()
+            self.context.term()
+            self.mqtt_client.loop_stop()
 
 if __name__ == "__main__":
     time.sleep(2)

@@ -29,6 +29,23 @@ ZMQ_PORT = os.getenv("ZMQ_INGESTION_PORT", "5555")
 MQTT_HOST = os.getenv("MQTT_BROKER_HOST", "mqtt_broker")
 MQTT_PORT = int(os.getenv("MQTT_BROKER_PORT", "1883"))
 
+TWIN_STATE = {
+    "device_id": None,
+    "temperature_c": None,
+    "bias_voltage_v": None,
+    "optical_power_w": None,
+    "timestamp": None,
+    "physics_state": None,
+    "recommended_gain_mode": None,
+    "assigned_bias_v": None,
+    "last_action": None,
+    "updates_received": 0
+}
+
+# Single persistent InfluxDB Client instance across execution
+influx_client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+
 # Initialize MQTT Client
 mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id="TwinEngine")
 
@@ -48,19 +65,17 @@ def init_mqtt():
 def write_to_influx(temp_c: float, bias_v: float, state: dict):
     """Writes physics telemetry point to InfluxDB time-series database."""
     try:
-        with InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG) as client:
-            write_api = client.write_api(write_options=SYNCHRONOUS)
-            point = Point("photodetector_state") \
-                .tag("device_id", "pd_sensor_01") \
-                .field("temperature_c", float(temp_c)) \
-                .field("bias_voltage_v", float(bias_v)) \
-                .field("responsivity_a_w", float(state["responsivity_a_w"])) \
-                .field("dark_current_a", float(state["dark_current_a"])) \
-                .field("photocurrent_a", float(state["photocurrent_a"])) \
-                .field("snr_db", float(state["snr_db"])) \
-                .field("health_index_pct", float(state["health_index_pct"]))
-            
-            write_api.write(bucket=INFLUXDB_BUCKET, record=point)
+        point = Point("photodetector_state") \
+            .tag("device_id", "pd_sensor_01") \
+            .field("temperature_c", float(temp_c)) \
+            .field("bias_voltage_v", float(bias_v)) \
+            .field("responsivity_a_w", float(state["responsivity_a_w"])) \
+            .field("dark_current_a", float(state["dark_current_a"])) \
+            .field("photocurrent_a", float(state["photocurrent_a"])) \
+            .field("snr_db", float(state["snr_db"])) \
+            .field("health_index_pct", float(state["health_index_pct"]))
+        
+        write_api.write(bucket=INFLUXDB_BUCKET, record=point)
     except Exception as e:
         print(f"[InfluxDB Error] Write failed: {e}")
 
@@ -78,19 +93,51 @@ def zmq_telemetry_listener():
             _, json_data = raw_message.split(" ", 1)
             data = json.loads(json_data)
 
+            temp_c = data.get("temperature_c", 25.0)
+            bias_v = data.get("bias_voltage_v", 5.0)
+            optical_power_w = data.get("optical_power_w", data.get("power_w", 0.001))
+
             state = physics_engine.evaluate_state(
-                temp_c=data["temperature_c"],
-                bias_v=data["bias_voltage_v"],
-                optical_power_w=data["optical_power_w"]
+                temp_c=temp_c,
+                bias_v=bias_v,
+                optical_power_w=optical_power_w
             )
-            write_to_influx(data["temperature_c"], data["bias_voltage_v"], state)
+            write_to_influx(temp_c, bias_v, state)
+
+            recommended_mode = ai_planner.recommend_mode_from_state(state)
+
+            TWIN_STATE["device_id"] = data.get("device_id")
+            TWIN_STATE["temperature_c"] = temp_c
+            TWIN_STATE["bias_voltage_v"] = bias_v
+            TWIN_STATE["optical_power_w"] = optical_power_w
+            TWIN_STATE["timestamp"] = data.get("timestamp")
+            TWIN_STATE["physics_state"] = state
+            TWIN_STATE["updates_received"] += 1
+
+            if recommended_mode != TWIN_STATE["recommended_gain_mode"]:
+                plan_result = ai_planner.validate_and_plan_bias(
+                    target_gain_mode=recommended_mode,
+                    current_temp_c=temp_c,
+                    expected_power_w=optical_power_w
+                )
+                TWIN_STATE["recommended_gain_mode"] = recommended_mode
+                TWIN_STATE["assigned_bias_v"] = plan_result["assigned_bias_v"]
+                TWIN_STATE["last_action"] = plan_result["reason"]
+
+                payload = json.dumps({
+                    "assigned_bias_v": plan_result["assigned_bias_v"],
+                    "gain_mode": recommended_mode,
+                    "approved": plan_result["approved"],
+                    "source": "behavioral_model"
+                })
+                mqtt_client.publish("hardware/bias_command", payload)
+                print(f"[Behavioral Model] Telemetry-driven mode change -> {recommended_mode} | bias {plan_result['assigned_bias_v']} V")
         except Exception as e:
             print(f"[ZMQ Listener Error] {e}")
 
 @app.on_event("startup")
 def startup_event():
     init_mqtt()
-    # Start ZMQ background listener
     listener_thread = threading.Thread(target=zmq_telemetry_listener, daemon=True)
     listener_thread.start()
 
@@ -109,6 +156,11 @@ class NaturalLanguageCommandInput(BaseModel):
 def health_check():
     return {"status": "online", "service": "twin_engine"}
 
+@app.get("/twin_state")
+def get_twin_state():
+    """Returns the live digital twin state derived from ingested telemetry and the behavioral model's response to it."""
+    return TWIN_STATE
+
 @app.post("/plan_command")
 def plan_user_command(cmd: CommandInput):
     plan_result = ai_planner.validate_and_plan_bias(
@@ -117,7 +169,6 @@ def plan_user_command(cmd: CommandInput):
         expected_power_w=cmd.expected_power_w
     )
     
-    # Broadcast approved bias voltage command to hardware over MQTT
     if plan_result["approved"]:
         payload = json.dumps({"assigned_bias_v": plan_result["assigned_bias_v"]})
         mqtt_client.publish("hardware/bias_command", payload)
