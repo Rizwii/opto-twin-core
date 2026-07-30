@@ -29,13 +29,16 @@ class PhotodetectorDataStreamer:
         self.init_mqtt()
 
     def init_mqtt(self):
-        """Retries connection to MQTT broker."""
-        try:
-            self.mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
-            self.mqtt_client.loop_start()
-            print(f"[MQTT Publisher] Connected to {MQTT_HOST}:{MQTT_PORT}")
-        except Exception as e:
-            print(f"[MQTT Publisher Warning] MQTT broker not available initially: {e}")
+        """Continuously retries connection to MQTT broker until successful."""
+        while True:
+            try:
+                self.mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
+                self.mqtt_client.loop_start()
+                print(f"[MQTT Publisher] Connected successfully to {MQTT_HOST}:{MQTT_PORT}")
+                break  # Break out of the loop once connected
+            except Exception as e:
+                print(f"[MQTT Publisher Warning] Broker not ready, retrying in 3 seconds... ({e})")
+                time.sleep(3)
 
     def generate_sensor_readings(self) -> dict:
         base_temp = 25.0 + random.uniform(-0.5, 0.5)
@@ -65,9 +68,11 @@ class PhotodetectorDataStreamer:
 
                 # 2. MQTT Topic Publish (Telemetry Topic)
                 try:
-                    self.mqtt_client.publish("telemetry/pd_sensor_01", json_payload)
-                except Exception:
-                    pass
+                    result = self.mqtt_client.publish("telemetry/pd_sensor_01", json_payload)
+                    if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                        print(f"[MQTT Publish Warning] Return code: {result.rc}")
+                except Exception as e:
+                    print(f"[MQTT Publish Error] {e}")
 
                 time.sleep(interval)
         except KeyboardInterrupt:

@@ -25,7 +25,7 @@ services:
     build:
       context: .
       dockerfile: services/ingestion/Dockerfile
-    container_name: ingestion_service
+    
     ports:
       - "5555:5555"
     environment:

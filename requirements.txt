@@ -8,3 +8,4 @@ httpx
 influxdb-client
 pyzmq
 paho-mqtt
+python-dotenv

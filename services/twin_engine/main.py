@@ -179,18 +179,22 @@ def plan_user_command(cmd: CommandInput):
 @app.post("/plan_nl_command")
 def plan_natural_language_command(cmd: NaturalLanguageCommandInput):
     """LLM Endpoint: Translates plain text user prompt to operational gain mode and executes planning."""
-    gain_mode = ai_planner.interpret_natural_language(cmd.user_prompt)
+    interpretation = ai_planner.interpret_natural_language(cmd.user_prompt)
+    gain_mode = interpretation["intent"]
     plan_result = ai_planner.validate_and_plan_bias(
         target_gain_mode=gain_mode,
         current_temp_c=cmd.current_temp_c,
         expected_power_w=cmd.expected_power_w
     )
-    
+
     if plan_result["approved"]:
         payload = json.dumps({"assigned_bias_v": plan_result["assigned_bias_v"]})
         mqtt_client.publish("hardware/bias_command", payload)
 
     return {
         "interpreted_gain_mode": gain_mode,
+        "confidence": interpretation["confidence"],
+        "interpretation_source": interpretation["source"],
+        "interpretation_status": interpretation["status"],
         "plan_result": plan_result
     }

@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-import urllib.request
+import requests
 from typing import Dict, Any, Tuple
 from physics_model import PhotodetectorPhysicsEngine
 
@@ -84,13 +84,15 @@ class AICommandPlanner:
                 
                 headers = {
                     "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "User-Agent": "opto-twin-core/1.0"
                 }
 
-                req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
+                # Using requests library to ensure consistent authorization handshake
+                response = requests.post(url, headers=headers, json=payload, timeout=10)
                 
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    res_data = json.loads(response.read().decode('utf-8'))
+                if response.status_code == 200:
+                    res_data = response.json()
                     content = json.loads(res_data['choices'][0]['message']['content'])
                     
                     return {
@@ -99,8 +101,13 @@ class AICommandPlanner:
                         "source": "LLM (Groq / LLaMA 3.3)",
                         "status": "success"
                     }
+                else:
+                    print(f"Groq API returned status code {response.status_code}: {response.text}")
 
             except Exception as e:
+                import traceback
+                print("=== FULL ERROR ===")
+                traceback.print_exc()
                 logger.warning(f"Groq API call failed ({e}). Falling back to rule-based engine.")
 
         # Graceful Fallback Execution
