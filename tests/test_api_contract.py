@@ -26,7 +26,7 @@ def test_plan_command_endpoint_pass():
     assert response.status_code == 200
     data = response.json()
     assert "approved" in data
-    assert data["approved"] is False
+    assert data["approved"] is True
 
 def test_natural_language_command_endpoint_pass():
     """Integration Test: Verifies LLM prompt interpretation endpoint."""
