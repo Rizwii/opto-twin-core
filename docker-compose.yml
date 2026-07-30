@@ -3,9 +3,7 @@ services:
     build:
       context: .
       dockerfile: services/twin_engine/Dockerfile
-    container_name: twin_engine_service
-    ports:
-      - "8000:8000"
+    
     environment:
       - INFLUXDB_URL=http://influxdb_service:8086
       - INFLUXDB_TOKEN=my-super-secret-auth-token
@@ -25,7 +23,6 @@ services:
     build:
       context: .
       dockerfile: services/ingestion/Dockerfile
-    
     ports:
       - "5555:5555"
     environment:
